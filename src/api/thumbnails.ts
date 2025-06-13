@@ -4,37 +4,13 @@ import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
+import path from "path";
+import { randomBytes } from "crypto";
 
 type Thumbnail = {
   data: ArrayBuffer;
   mediaType: string;
 };
-
-const videoThumbnails: Map<string, Thumbnail> = new Map();
-
-export async function handlerGetThumbnail(cfg: ApiConfig, req: BunRequest) {
-  const { videoId } = req.params as { videoId?: string };
-  if (!videoId) {
-    throw new BadRequestError("Invalid video ID");
-  }
-
-  const video = getVideo(cfg.db, videoId);
-  if (!video) {
-    throw new NotFoundError("Couldn't find video");
-  }
-
-  const thumbnail = videoThumbnails.get(videoId);
-  if (!thumbnail) {
-    throw new NotFoundError("Thumbnail not found");
-  }
-
-  return new Response(thumbnail.data, {
-    headers: {
-      "Content-Type": thumbnail.mediaType,
-      "Cache-Control": "no-store",
-    },
-  });
-}
 
 export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   const { videoId } = req.params as { videoId?: string };
@@ -62,10 +38,19 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (!mediaType) {
     throw new BadRequestError("Missing Content-Type for thumbnail");
   }
+  if (mediaType !== "image/jpeg" && mediaType !== "image/png") {
+    throw new BadRequestError("Incorrect Content type for thumbnail - must be jpeg or png");
+  }
+  const fileExtension = mediaType.split("/")[1];
+  const fileName = `${randomBytes(32).toString("base64url")}.${fileExtension}`;
+  const filePath = path.join(cfg.assetsRoot, fileName);
+
   const imageData = await file.arrayBuffer();
   if (!imageData) {
     throw new Error("Error reading File data");
   }
+
+  await Bun.write(filePath, imageData);
 
   const videoMetaData = getVideo(cfg.db, videoId);
   if (!videoMetaData) {
@@ -75,13 +60,7 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
     throw new UserForbiddenError("Video thumbnail does not belong to the current user");
   }
 
-  videoThumbnails.set(videoId, {
-    data: imageData,
-    mediaType: mediaType,
-  });
-
-  const thumbnailUrl = `http://localhost:${cfg.port}/api/thumbnails/${videoId}`;
-  videoMetaData.thumbnailURL = thumbnailUrl;
+  videoMetaData.thumbnailURL = `http://localhost:${cfg.port}/assets/${fileName}`;
   updateVideo(cfg.db, videoMetaData);
 
   return respondWithJSON(200, videoMetaData);
